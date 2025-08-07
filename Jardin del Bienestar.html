@@ -12,9 +12,27 @@
     <!-- Incluimos Babel para que el navegador entienda el código React -->
     <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <!-- Incluimos Firebase y Firestore (versión compatible con global scope) -->
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-app.js';
+        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-firestore.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/9.9.3/firebase-auth.js';
+        
+        // Exponemos las funciones de Firebase al ámbito global para que React pueda usarlas
+        window.firebaseApp = {
+            initializeApp,
+            getFirestore,
+            doc,
+            getDoc,
+            addDoc,
+            setDoc,
+            onSnapshot,
+            collection,
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
+            onAuthStateChanged
+        };
+    </script>
     <style>
         /* Estilo para una animación de carga simple */
         @keyframes pulse-fast {
@@ -53,37 +71,63 @@
             const [dashboardData, setDashboardData] = React.useState([]);
             const [isHRAuthenticated, setIsHRAuthenticated] = React.useState(false);
             const [lastResponseDate, setLastResponseDate] = React.useState(null);
+            const [error, setError] = React.useState(null);
 
-            // --- Inicialización y Autenticación de Firebase ---
+            // --- Inicialización y Autenticación de Firebase (Versión Modular) ---
             React.useEffect(() => {
                 const initializeFirebase = async () => {
                     try {
-                        const app = firebase.initializeApp(firebaseConfig);
-                        const firestore = firebase.firestore();
-                        const authInstance = firebase.auth();
+                        // Verificamos si la configuración es válida
+                        if (!firebaseConfig.projectId) {
+                            setError("Error: No se proporcionó la configuración de Firebase. La aplicación no se puede iniciar.");
+                            console.error("Error: 'projectId' not provided in firebaseConfig.");
+                            return;
+                        }
+
+                        console.log("Initializing Firebase with config:", firebaseConfig);
+                        const app = window.firebaseApp.initializeApp(firebaseConfig);
+                        const firestore = window.firebaseApp.getFirestore(app);
+                        const authInstance = window.firebaseApp.getAuth(app);
 
                         setDb(firestore);
                         setAuth(authInstance);
 
-                        firebase.auth().onAuthStateChanged(async (user) => {
+                        const unsubscribe = window.firebaseApp.onAuthStateChanged(authInstance, async (user) => {
                             if (user) {
+                                console.log("User authenticated:", user.uid);
                                 setUserId(user.uid);
                                 setIsAuthReady(true);
-                                const userMetadataRef = firestore.collection('artifacts').doc(appId).collection('users').doc(user.uid).collection('metadata').doc('last_response');
-                                const docSnap = await userMetadataRef.get();
-                                if (docSnap.exists) {
-                                    setLastResponseDate(docSnap.data().timestamp.toDate());
+                                
+                                try {
+                                    const userMetadataRef = window.firebaseApp.doc(firestore, 'artifacts', appId, 'users', user.uid, 'metadata', 'last_response');
+                                    const docSnap = await window.firebaseApp.getDoc(userMetadataRef);
+                                    if (docSnap.exists()) {
+                                        setLastResponseDate(docSnap.data().timestamp.toDate());
+                                    }
+                                } catch (e) {
+                                    console.error("Error fetching last response date:", e);
                                 }
                             } else {
-                                if (initialAuthToken) {
-                                    await authInstance.signInWithCustomToken(initialAuthToken);
-                                } else {
-                                    await authInstance.signInAnonymously();
+                                console.log("User not authenticated. Attempting sign-in.");
+                                try {
+                                    if (initialAuthToken) {
+                                        console.log("Signing in with custom token...");
+                                        await window.firebaseApp.signInWithCustomToken(authInstance, initialAuthToken);
+                                    } else {
+                                        console.log("Signing in anonymously...");
+                                        await window.firebaseApp.signInAnonymously(authInstance);
+                                    }
+                                } catch (e) {
+                                    console.error("Error during authentication:", e);
+                                    setError("Error al autenticarse. Por favor, revisa la consola para más detalles.");
                                 }
                             }
                         });
-                    } catch (error) {
-                        console.error("Error initializing Firebase:", error);
+
+                        return () => unsubscribe(); // Limpieza del listener
+                    } catch (e) {
+                        console.error("Error fatal al inicializar Firebase:", e);
+                        setError("Error fatal al iniciar la aplicación. Revisa la consola.");
                     }
                 };
                 initializeFirebase();
@@ -92,14 +136,15 @@
             // --- Obtener datos del Panel de Control ---
             React.useEffect(() => {
                 if (isAuthReady && db) {
-                    const dashboardRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('dashboard');
+                    const dashboardColRef = window.firebaseApp.collection(db, 'artifacts', appId, 'public', 'data', 'dashboard');
                     
-                    const unsubscribe = dashboardRef.onSnapshot((snapshot) => {
+                    const unsubscribe = window.firebaseApp.onSnapshot(dashboardColRef, (snapshot) => {
                         const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                         setDashboardData(data);
                         console.log("Dashboard data fetched:", data);
                     }, (error) => {
                         console.error("Error fetching dashboard data:", error);
+                        setError("Error al obtener los datos del panel. Revisa la consola.");
                     });
 
                     return () => unsubscribe();
@@ -146,15 +191,15 @@
                 
                 if (answer && isAuthReady && db && userId) {
                     try {
-                        const responseRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('dashboard').doc(question.id);
-                        const docSnap = await responseRef.get();
-                        const currentData = docSnap.exists ? docSnap.data() : { questionText: question.text, answers: {} };
+                        const responseRef = window.firebaseApp.doc(db, 'artifacts', appId, 'public', 'data', 'dashboard', question.id);
+                        const docSnap = await window.firebaseApp.getDoc(responseRef);
+                        const currentData = docSnap.exists() ? docSnap.data() : { questionText: question.text, answers: {} };
                         const newAnswers = { ...currentData.answers };
                         newAnswers[answer] = (newAnswers[answer] || 0) + 1;
-                        await responseRef.set({ questionText: question.text, answers: newAnswers }, { merge: true });
+                        await window.firebaseApp.setDoc(responseRef, { questionText: question.text, answers: newAnswers }, { merge: true });
 
-                        const privateResponsesRef = db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('responses');
-                        await privateResponsesRef.add({
+                        const privateResponsesRef = window.firebaseApp.collection(db, 'artifacts', appId, 'users', userId, 'responses');
+                        await window.firebaseApp.addDoc(privateResponsesRef, {
                             questionText: question.text,
                             answer,
                             timestamp: new Date().toISOString(),
@@ -162,8 +207,9 @@
                         });
                         console.log("User response saved to Firestore.");
 
-                    } catch (error) {
-                        console.error("Error saving data to Firestore:", error);
+                    } catch (e) {
+                        console.error("Error saving data to Firestore:", e);
+                        setError("Error al guardar la respuesta. Revisa la consola.");
                     }
                 } else if (!answer) {
                     console.log("Question was skipped, no data saved to dashboard.");
@@ -173,8 +219,8 @@
                     setCurrentQuestionIndex(prevIndex => prevIndex + 1);
                 } else {
                     if (isAuthReady && db && userId) {
-                        const userMetadataRef = db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('metadata').doc('last_response');
-                        await userMetadataRef.set({ timestamp: new Date() });
+                        const userMetadataRef = window.firebaseApp.doc(db, 'artifacts', appId, 'users', userId, 'metadata', 'last_response');
+                        await window.firebaseApp.setDoc(userMetadataRef, { timestamp: new Date() });
                         setLastResponseDate(new Date());
                     }
                     setView('completion');
@@ -186,8 +232,8 @@
                     setCurrentQuestionIndex(prevIndex => prevIndex + 1);
                 } else {
                     if (isAuthReady && db && userId) {
-                        const userMetadataRef = db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('metadata').doc('last_response');
-                        await userMetadataRef.set({ timestamp: new Date() });
+                        const userMetadataRef = window.firebaseApp.doc(db, 'artifacts', appId, 'users', userId, 'metadata', 'last_response');
+                        await window.firebaseApp.setDoc(userMetadataRef, { timestamp: new Date() });
                         setLastResponseDate(new Date());
                     }
                     setView('completion');
@@ -365,6 +411,16 @@
 
             // --- Renderizado principal de la UI ---
             const renderApp = () => {
+                if (error) {
+                    return (
+                        <div className="text-center p-8 bg-red-100 text-red-800 rounded-2xl shadow-lg">
+                            <h2 className="text-2xl font-bold mb-4">¡Error!</h2>
+                            <p>{error}</p>
+                            <p className="mt-4">Por favor, revisa la consola del navegador para más detalles.</p>
+                        </div>
+                    );
+                }
+
                 switch (view) {
                     case 'welcome':
                         return (
@@ -452,13 +508,14 @@
 
             return (
                 <div className="w-full max-w-md mx-auto p-4">
-                    {!isAuthReady && (
+                    {!isAuthReady && !error && (
                         <div className="text-center p-8">
                             <div className="inline-block h-12 w-12 rounded-full bg-emerald-500 animate-pulse-fast"></div>
                             <p className="text-lg text-slate-600 mt-4">Cargando tu Jardín de Bienestar...</p>
                         </div>
                     )}
                     {isAuthReady && renderApp()}
+                    {error && renderApp()}
                 </div>
             );
         }
